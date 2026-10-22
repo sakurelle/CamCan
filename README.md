@@ -23,7 +23,7 @@ Marker QC — настольное приложение для измерени�
 
 - Красные L1/L2 задают длину.
 - Синие W1/W2/WC задают перпендикулярный размер ширины.
-- Тонкая жёлтая рамка показывает текущую область поиска.
+- Красная рамка показывает текущую область поиска; её можно скрыть отдельным флажком.
 - При неверных точках нажмите **Коррекция точек**: кадр заморозится, а изображение можно увеличить.
 - Если маркер исчез, касается границы ROI или обнаружено несколько кандидатов, размеры очищаются и сохранение блокируется.
 - **Очистить историю** удаляет измерения и только связанные снимки внутри управляемого каталога. Калибровка и настройки сохраняются.
@@ -50,10 +50,11 @@ python -m pytest -q
 .\build.ps1
 ```
 
-Результат: `dist\MarkerQC\MarkerQC.exe`. Для упаковки версии 1.1.1:
+Результат: `dist\MarkerQC\MarkerQC.exe`. Для локальной упаковки используйте тег, совпадающий с версией в `pyproject.toml`:
 
 ```powershell
-.\scripts\package_release.ps1 -Tag v1.1.1
+$version = (Select-String pyproject.toml '^version\s*=\s*"([^"]+)"$').Matches[0].Groups[1].Value
+.\scripts\package_release.ps1 -Tag "v$version"
 ```
 
 Скрипт проверяет совпадение тега с `pyproject.toml`, создаёт ZIP и SHA-256 в `release\`.
@@ -67,17 +68,30 @@ python -m pytest -q
 - Публикация использует штатный `GITHUB_TOKEN` с `contents: write` только в release job. Pull request не может опубликовать релиз.
 - Существующий релиз с тем же тегом не перезаписывается.
 
-Создание релиза:
+Единственный источник версии — поле `project.version` в `pyproject.toml`. Правильный порядок выпуска:
+
+1. Выберите новый свободный номер SemVer и измените `project.version`.
+2. Запустите `python -m compileall -q marker_qc`, `python -m pytest -q` и `build.ps1`.
+3. Зафиксируйте изменение версии и остальные изменения в одном коммите и отправьте ветку.
+4. Только после этого создайте аннотированный тег на этом коммите и отправьте тег.
+5. Дождитесь workflow **Windows release** и проверьте, что в GitHub Release опубликован `MarkerQC-Windows-x64.zip`.
+
+Пример после установки значения `1.2.0` в `pyproject.toml`:
 
 ```powershell
-git tag v1.1.1
-git push origin v1.1.1
+git add pyproject.toml
+git commit -m "Release 1.2.0"
+git push origin main
+git tag -a v1.2.0 -m "Marker QC v1.2.0"
+git push origin v1.2.0
 ```
 
-Ручной эквивалент после локальной сборки и упаковки:
+Не создавайте тег до коммита с соответствующей версией: workflow намеренно остановится до тестов и сборки при несовпадении. Повторный запуск не перезаписывает уже существующий релиз.
+
+Ручной эквивалент публикации после локальной сборки и упаковки:
 
 ```powershell
-gh release create v1.1.1 release\MarkerQC-Windows-x64.zip release\MarkerQC-Windows-x64.zip.sha256 --verify-tag --generate-notes
+gh release create v1.2.0 release\MarkerQC-Windows-x64.zip release\MarkerQC-Windows-x64.zip.sha256 --verify-tag --generate-notes
 ```
 
 Не храните персональные токены в репозитории.

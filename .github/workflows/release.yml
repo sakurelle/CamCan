@@ -14,9 +14,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build-and-release:
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     env:
@@ -24,17 +29,11 @@ jobs:
       MARKER_QC_SKIP_CAMERA_SCAN: "1"
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Verify tag version
+      - name: Verify tag version and release inputs
         shell: pwsh
         run: |
           $tag = $env:RELEASE_TAG
@@ -46,6 +45,34 @@ jobs:
           $tagCommit = (git rev-list -n 1 $tag).Trim()
           $headCommit = (git rev-parse HEAD).Trim()
           if ($tagCommit -ne $headCommit) { throw "Checked out commit $headCommit does not match $tag ($tagCommit)" }
+          foreach ($path in @(
+            "MarkerQC.spec",
+            "build.ps1",
+            "scripts\package_release.ps1",
+            "README.md",
+            "docs\OPERATOR_GUIDE.md",
+            "docs\METROLOGY_VALIDATION.md"
+          )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required release input is missing: $path"
+            }
+          }
+      - name: Ensure release does not already exist
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:RELEASE_TAG 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "Release already exists; refusing to overwrite it" }
+          exit 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile modules
+        run: python -m compileall -q marker_qc
       - name: Run tests
         run: python -m pytest -q
       - name: Build onedir application
@@ -101,14 +128,6 @@ jobs:
           } finally {
             $archive.Dispose()
           }
-      - name: Ensure release does not already exist
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view $env:RELEASE_TAG 2>$null
-          if ($LASTEXITCODE -eq 0) { throw "Release already exists; refusing to overwrite it" }
-          exit 0
       - name: Publish GitHub Release
         shell: pwsh
         env:
@@ -116,3 +135,23 @@ jobs:
         run: |
           $tag = $env:RELEASE_TAG
           gh release create $tag "release\MarkerQC-Windows-x64.zip" "release\MarkerQC-Windows-x64.zip.sha256" --verify-tag --generate-notes --title "Marker QC $tag"
+      - name: Verify published GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $release = gh release view $tag --json url,isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($release.isDraft) { throw "Published release is still a draft" }
+          if ($release.isPrerelease) { throw "Published release is unexpectedly marked as prerelease" }
+          $asset = @($release.assets | Where-Object { $_.name -eq "MarkerQC-Windows-x64.zip" })
+          if ($asset.Count -ne 1 -or [int64]$asset[0].size -le 0) {
+            throw "Published release does not contain one non-empty MarkerQC-Windows-x64.zip asset"
+          }
+          $downloadDir = Join-Path $env:RUNNER_TEMP "published-release"
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+          gh release download $tag --pattern "MarkerQC-Windows-x64.zip" --dir $downloadDir
+          $localHash = (Get-FileHash -LiteralPath ".\release\MarkerQC-Windows-x64.zip" -Algorithm SHA256).Hash
+          $publishedHash = (Get-FileHash -LiteralPath (Join-Path $downloadDir "MarkerQC-Windows-x64.zip") -Algorithm SHA256).Hash
+          if ($localHash -ne $publishedHash) { throw "Published ZIP checksum does not match the built ZIP" }
+          Write-Output "RELEASE_URL=$($release.url)"
