@@ -11,11 +11,11 @@ from pathlib import Path
 
 import numpy as np
 import cv2
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QFontDatabase, QPixmap, QResizeEvent
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QPushButton, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
+    QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHeaderView, QHBoxLayout,
+    QLabel, QMainWindow, QMessageBox, QPushButton, QSizePolicy, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -23,7 +23,7 @@ from marker_qc.camera import CameraDescriptor, CameraLoop, enumerate_cameras
 from marker_qc.config import AppSettings, CameraProfile, SettingsStore, full_frame_roi
 from marker_qc.gui.dialogs import CalibrationDialog, PointEditorDialog, RoiDialog
 from marker_qc.gui.widgets import array_to_qimage
-from marker_qc.measurement import draw_measurement, measure_points
+from marker_qc.measurement import draw_measurement_geometry, draw_measurement_text, measure_points
 from marker_qc.models import Calibration, Decision, InspectionDraft, InspectionStage, MeasurementResult
 from marker_qc.paths import AppPaths
 from marker_qc.processing import ProcessingResult, process_frame
@@ -114,10 +114,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.paths, self.settings_store, self.settings, self.storage = paths, settings_store, settings, storage
         self.setWindowTitle("Marker QC — контроль качества маркеров")
+        self.setFont(QFont("Segoe UI", 10))
+        self.setMinimumSize(1100, 700)
         self.resize(1320, 820)
         self.current_frame: np.ndarray | None = None
         self.snapshot: MeasurementSnapshot | None = None
         self._display_image: np.ndarray | None = None
+        self._display_measurement: MeasurementResult | None = None
         self._manual_frozen = False
         self._saving = False
         self._frame_sequence = 0
@@ -143,82 +146,157 @@ class MainWindow(QMainWindow):
         menu.addAction(data_action)
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+
         control = QWidget()
         root = QVBoxLayout(control)
-        camera_row = QHBoxLayout()
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(14)
+
+        camera_panel = QFrame()
+        camera_panel.setObjectName("cameraPanel")
+        camera_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        camera_grid = QGridLayout(camera_panel)
+        camera_grid.setContentsMargins(16, 12, 16, 12)
+        camera_grid.setHorizontalSpacing(10)
+        camera_grid.setVerticalSpacing(5)
+        camera_title = QLabel("Источник изображения")
+        camera_title.setObjectName("sectionTitle")
+        camera_grid.addWidget(camera_title, 0, 0, 1, 6)
+        camera_label = QLabel("Камера")
+        camera_label.setObjectName("fieldLabel")
+        resolution_label = QLabel("Разрешение")
+        resolution_label.setObjectName("fieldLabel")
         self.camera_combo = QComboBox()
+        self.camera_combo.setMinimumWidth(280)
         self.resolution_combo = QComboBox()
+        self.resolution_combo.setMinimumWidth(132)
         for resolution in ((640, 480), (1280, 720), (1920, 1080)):
             self.resolution_combo.addItem(f"{resolution[0]}×{resolution[1]}", resolution)
-        self.refresh_button = QPushButton("Обновить камеры")
-        self.connect_button = QPushButton("Подключить")
+        self.refresh_button = self._button("Обновить камеры", "utility")
+        self.connect_button = self._button("Подключить", "secondary")
         self.refresh_button.clicked.connect(self.refresh_cameras)
         self.connect_button.clicked.connect(self.toggle_camera)
-        camera_row.addWidget(QLabel("Камера:"))
-        camera_row.addWidget(self.camera_combo, 1)
-        camera_row.addWidget(QLabel("Разрешение:"))
-        camera_row.addWidget(self.resolution_combo)
-        camera_row.addWidget(self.refresh_button)
-        camera_row.addWidget(self.connect_button)
-        root.addLayout(camera_row)
+        camera_fields = QHBoxLayout()
+        camera_fields.setSpacing(10)
+        camera_fields.addWidget(camera_label)
+        camera_fields.addWidget(self.camera_combo, 1)
+        camera_fields.addSpacing(6)
+        camera_fields.addWidget(resolution_label)
+        camera_fields.addWidget(self.resolution_combo)
+        camera_fields.addWidget(self.refresh_button)
+        camera_fields.addWidget(self.connect_button)
+        camera_grid.addLayout(camera_fields, 1, 0, 1, 6)
+        root.addWidget(camera_panel)
+
         splitter = QSplitter()
+        splitter.setHandleWidth(10)
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(12)
         self.preview = QLabel("Камера не подключена")
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumSize(720, 540)
-        self.preview.setStyleSheet("background:#202124;color:#ddd;border:1px solid #555")
+        self.preview.setMinimumSize(620, 420)
+        self.preview.setObjectName("cameraPreview")
         left_layout.addWidget(self.preview, 1)
+
+        tools_panel = QFrame()
+        tools_panel.setObjectName("toolsPanel")
+        tools_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tools_layout = QVBoxLayout(tools_panel)
+        tools_layout.setContentsMargins(12, 10, 12, 10)
+        tools_layout.setSpacing(8)
         secondary_actions = QHBoxLayout()
+        secondary_actions.setContentsMargins(0, 0, 0, 0)
         secondary_actions.setSpacing(8)
-        self.roi_button = QPushButton("Область поиска")
-        self.calibrate_button = QPushButton("Калибровка")
-        self.edit_points_button = QPushButton("Коррекция точек")
+        self.roi_button = self._button("Область поиска", "secondary")
+        self.calibrate_button = self._button("Калибровка", "secondary")
+        self.edit_points_button = self._button("Коррекция точек", "secondary")
+        self.show_roi_checkbox = QCheckBox("Показывать рамку области поиска")
+        self.show_roi_checkbox.setChecked(True)
+        self.show_roi_checkbox.toggled.connect(self._roi_visibility_changed)
         self.roi_button.clicked.connect(self.select_roi)
         self.calibrate_button.clicked.connect(self.calibrate)
         self.edit_points_button.clicked.connect(self.edit_points)
         for button in (self.roi_button, self.calibrate_button, self.edit_points_button):
-            button.setFixedHeight(36)
             secondary_actions.addWidget(button)
-        left_layout.addLayout(secondary_actions)
-        self.measure_button = QPushButton("ИЗМЕРИТЬ")
-        self.measure_button.setMinimumHeight(62)
-        self.measure_button.setStyleSheet(
-            "QPushButton{font-size:20px;font-weight:bold;background:#1769aa;color:white;border-radius:5px;}"
-            "QPushButton:disabled{background:#aeb8c2;color:#eef1f3;}"
-            "QPushButton:hover:enabled{background:#0d5d9f;}"
-        )
+        secondary_actions.addStretch()
+        tools_layout.addLayout(secondary_actions)
+        roi_visibility_row = QHBoxLayout()
+        roi_visibility_row.setContentsMargins(2, 0, 0, 0)
+        roi_visibility_row.addWidget(self.show_roi_checkbox)
+        roi_visibility_row.addStretch()
+        tools_layout.addLayout(roi_visibility_row)
+        left_layout.addWidget(tools_panel)
+
+        self.measure_button = self._button("Измерить", "primary")
         self.measure_button.clicked.connect(self.save_measurement)
-        left_layout.addWidget(self.measure_button)
         splitter.addWidget(left)
-        right = QWidget()
+
+        right = QFrame()
+        right.setObjectName("infoPanel")
         self.info_panel = right
         right.setFixedWidth(390)
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(20, 18, 20, 18)
+        right_layout.setSpacing(12)
+
+        technical_title = QLabel("Камера и калибровка")
+        technical_title.setObjectName("sectionTitle")
+        right_layout.addWidget(technical_title)
+        self.resolution_status_label = QLabel("Разрешение: —")
+        self.resolution_status_label.setObjectName("secondaryText")
+        right_layout.addWidget(self.resolution_status_label)
         self.calibration_label = QLabel()
         self.calibration_label.setWordWrap(True)
+        self.calibration_label.setObjectName("technicalStatus")
         right_layout.addWidget(self.calibration_label)
+
+        divider_one = QFrame()
+        divider_one.setFrameShape(QFrame.HLine)
+        divider_one.setObjectName("divider")
+        right_layout.addWidget(divider_one)
+        metrics_title = QLabel("Измеренные значения")
+        metrics_title.setObjectName("sectionTitle")
+        right_layout.addWidget(metrics_title)
         metrics = QGridLayout()
         metrics.setHorizontalSpacing(12)
-        metrics.setVerticalSpacing(10)
+        metrics.setVerticalSpacing(12)
         self.length_label = self._metric_label("—")
         self.width_label = self._metric_label("—")
-        self.decision_label = self._metric_label("—")
-        for row, (caption, value) in enumerate((("Длина:", self.length_label), ("Ширина:", self.width_label), ("Итог:", self.decision_label))):
+        for row, (caption, value) in enumerate((("Длина", self.length_label), ("Ширина", self.width_label))):
             caption_label = QLabel(caption)
-            caption_label.setStyleSheet("font-size:20px;font-weight:600;color:#333")
+            caption_label.setObjectName("metricCaption")
             metrics.addWidget(caption_label, row, 0)
             metrics.addWidget(value, row, 1)
         metrics.setColumnStretch(1, 1)
         right_layout.addLayout(metrics)
+
+        result_title = QLabel("Результат контроля")
+        result_title.setObjectName("sectionTitle")
+        right_layout.addWidget(result_title)
+        self.decision_label = self._metric_label("—")
+        self.decision_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.decision_label.setMinimumWidth(0)
+        right_layout.addWidget(self.decision_label)
         self.state_label = QLabel("Маркер не обнаружен")
         self.state_label.setWordWrap(True)
-        self.state_label.setStyleSheet("color:#666;font-size:16px")
+        self.state_label.setObjectName("secondaryText")
         right_layout.addWidget(self.state_label)
-        self.diagnostic_button = QPushButton("Показать диагностику")
+
+        divider_two = QFrame()
+        divider_two.setFrameShape(QFrame.HLine)
+        divider_two.setObjectName("divider")
+        right_layout.addWidget(divider_two)
+        actions_title = QLabel("Действия")
+        actions_title.setObjectName("sectionTitle")
+        right_layout.addWidget(actions_title)
+        right_layout.addWidget(self.measure_button)
+        self.diagnostic_button = self._button("Показать диагностику", "secondary")
         self.diagnostic_button.setCheckable(True)
         self.diagnostic_text = QTextEdit()
         self.diagnostic_text.setReadOnly(True)
+        self.diagnostic_text.setObjectName("diagnosticText")
         self.diagnostic_text.hide()
         self.diagnostic_button.toggled.connect(self._toggle_diagnostics)
         right_layout.addWidget(self.diagnostic_button)
@@ -229,32 +307,116 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         root.addWidget(splitter)
         self.tabs.addTab(control, "Измерение")
+
         history = QWidget()
         history_layout = QVBoxLayout(history)
+        history_layout.setContentsMargins(18, 18, 18, 18)
+        history_layout.setSpacing(12)
+        history_title = QLabel("История измерений")
+        history_title.setObjectName("pageTitle")
+        history_layout.addWidget(history_title)
         self.history_table = QTableWidget()
+        self.history_table.setObjectName("historyTable")
         self.history_table.setColumnCount(6)
-        self.history_table.setHorizontalHeaderLabels(["Дата", "Длина", "Ширина", "Итог", "Точки", "Фотография"])
+        self.history_table.setHorizontalHeaderLabels(["Дата и время", "Длина, мм", "Ширина, мм", "Итог", "Точки", "Снимок"])
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.setShowGrid(False)
+        self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.verticalHeader().setDefaultSectionSize(38)
+        header = self.history_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        self.history_table.itemDoubleClicked.connect(self._open_history_image)
         history_layout.addWidget(self.history_table)
         buttons = QHBoxLayout()
-        refresh_history = QPushButton("Обновить")
-        export = QPushButton("Экспорт CSV")
-        export_excel = QPushButton("Экспорт Excel")
-        self.clear_history_button = QPushButton("Очистить историю")
-        self.clear_history_button.setStyleSheet("color:#b00020")
-        refresh_history.clicked.connect(self._refresh_history)
-        export.clicked.connect(self.export_csv)
-        export_excel.clicked.connect(self.export_excel)
+        buttons.setSpacing(8)
+        self.refresh_history_button = self._button("Обновить", "utility")
+        self.export_csv_button = self._button("Экспорт CSV", "utility")
+        self.export_excel_button = self._button("Экспорт Excel", "utility")
+        self.clear_history_button = self._button("Очистить историю", "destructive")
+        self.refresh_history_button.clicked.connect(self._refresh_history)
+        self.export_csv_button.clicked.connect(self.export_csv)
+        self.export_excel_button.clicked.connect(self.export_excel)
         self.clear_history_button.clicked.connect(self.clear_history)
-        buttons.addWidget(refresh_history)
-        buttons.addWidget(export)
-        buttons.addWidget(export_excel)
+        buttons.addWidget(self.refresh_history_button)
+        buttons.addWidget(self.export_csv_button)
+        buttons.addWidget(self.export_excel_button)
         buttons.addStretch()
         buttons.addWidget(self.clear_history_button)
         history_layout.addLayout(buttons)
         self.tabs.addTab(history, "История")
+
         self.measure_button.setEnabled(False)
         self.edit_points_button.setEnabled(False)
         self.statusBar().showMessage("Готово")
+        self.camera_combo.currentIndexChanged.connect(self._update_calibration_status)
+        self.resolution_combo.currentIndexChanged.connect(self._update_calibration_status)
+        self._apply_styles()
+
+    @staticmethod
+    def _button(text: str, role: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setProperty("buttonRole", role)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setFixedHeight(44 if role == "primary" else 36)
+        return button
+
+    def _apply_styles(self) -> None:
+        self.setStyleSheet("""
+            QMainWindow, QTabWidget::pane { background: #f3f5f7; }
+            QMenuBar { background: #ffffff; border-bottom: 1px solid #e4e8ec; padding: 3px; }
+            QMenuBar::item:selected { background: #eef4fa; border-radius: 4px; }
+            QTabBar::tab { background: transparent; color: #53606d; padding: 10px 20px; margin-right: 2px; }
+            QTabBar::tab:selected { color: #235f92; font-weight: 600; border-bottom: 2px solid #3478b8; }
+            QFrame#cameraPanel, QFrame#toolsPanel, QFrame#infoPanel {
+                background: #ffffff; border: 1px solid #e1e6ea; border-radius: 8px;
+            }
+            QLabel#cameraPreview {
+                background: #171a1d; color: #aeb7c0; border: 1px solid #d8dee4; border-radius: 8px;
+            }
+            QLabel#sectionTitle, QLabel#pageTitle { color: #20272e; font-weight: 650; font-size: 15px; }
+            QLabel#pageTitle { font-size: 18px; }
+            QLabel#fieldLabel { color: #5d6873; font-size: 13px; }
+            QLabel#metricCaption { color: #69747f; font-size: 14px; font-weight: 550; }
+            QLabel#secondaryText { color: #66727e; font-size: 13px; }
+            QLabel#technicalStatus { font-size: 13px; }
+            QFrame#divider { color: #e7ebef; background: #e7ebef; max-height: 1px; border: none; }
+            QComboBox {
+                background: #ffffff; color: #26313a; border: 1px solid #cfd7de; border-radius: 6px;
+                min-height: 34px; padding: 0 10px;
+            }
+            QComboBox:hover { border-color: #8faac2; }
+            QComboBox:focus { border: 1px solid #3478b8; }
+            QPushButton {
+                border-radius: 7px; padding: 0 14px; font-size: 13px; font-weight: 550;
+            }
+            QPushButton[buttonRole="primary"] { background: #2f73ad; color: white; border: 1px solid #2f73ad; }
+            QPushButton[buttonRole="primary"]:hover { background: #28679c; border-color: #28679c; }
+            QPushButton[buttonRole="primary"]:pressed { background: #225985; border-color: #225985; }
+            QPushButton[buttonRole="primary"]:disabled { background: #c7d1d9; color: #f4f6f7; border-color: #c7d1d9; }
+            QPushButton[buttonRole="secondary"] { background: #ffffff; color: #2d5f87; border: 1px solid #b9c9d7; }
+            QPushButton[buttonRole="secondary"]:hover { background: #f0f6fb; border-color: #7fa2bf; }
+            QPushButton[buttonRole="secondary"]:pressed, QPushButton[buttonRole="secondary"]:checked { background: #e2eef7; border-color: #5e8eb5; }
+            QPushButton[buttonRole="secondary"]:disabled { background: #f5f6f7; color: #a6afb7; border-color: #e1e5e8; }
+            QPushButton[buttonRole="utility"] { background: #f7f9fa; color: #394650; border: 1px solid #d3dae0; }
+            QPushButton[buttonRole="utility"]:hover { background: #edf2f5; border-color: #aebbc5; }
+            QPushButton[buttonRole="utility"]:pressed { background: #e2e8ec; }
+            QPushButton[buttonRole="utility"]:disabled { background: #f5f6f7; color: #a6afb7; border-color: #e4e7e9; }
+            QPushButton[buttonRole="destructive"] { background: #ffffff; color: #b33a3a; border: 1px solid #dfaaaa; }
+            QPushButton[buttonRole="destructive"]:hover { background: #fff2f1; border-color: #cc7474; }
+            QPushButton[buttonRole="destructive"]:pressed { background: #f8dfdd; }
+            QPushButton[buttonRole="destructive"]:disabled { color: #b9a6a6; border-color: #e6dada; }
+            QCheckBox { color: #46525c; spacing: 8px; font-size: 13px; }
+            QTextEdit#diagnosticText { background: #f7f9fa; color: #44515c; border: 1px solid #dce2e7; border-radius: 6px; padding: 8px; }
+            QTableWidget#historyTable { background: #ffffff; alternate-background-color: #f8fafb; border: 1px solid #e0e5e9; border-radius: 8px; color: #2b343b; }
+            QTableWidget#historyTable::item { padding: 7px; border-bottom: 1px solid #edf0f2; }
+            QTableWidget#historyTable::item:selected { background: #dcebf7; color: #20303d; }
+            QHeaderView::section { background: #eef2f5; color: #4c5964; border: none; border-right: 1px solid #dde3e8; border-bottom: 1px solid #d8dfe5; padding: 9px; font-weight: 600; }
+            QStatusBar { background: #ffffff; color: #5f6b75; border-top: 1px solid #e1e6ea; }
+        """)
 
     @staticmethod
     def _metric_label(text: str) -> QLabel:
@@ -272,6 +434,10 @@ class MainWindow(QMainWindow):
         self.diagnostic_text.setVisible(visible)
         self.diagnostic_button.setText("Скрыть диагностику" if visible else "Показать диагностику")
 
+    def _roi_visibility_changed(self, _visible: bool) -> None:
+        if self._display_image is not None:
+            self._show_image(self._display_image, self._display_measurement)
+
     def _error(self, message: str) -> None:
         logging.error(message)
         QMessageBox.critical(self, "Ошибка", message)
@@ -286,7 +452,11 @@ class MainWindow(QMainWindow):
         )
         self.camera_combo.clear()
         self.camera_combo.addItem(f"{descriptor.label} — сохранённая", descriptor)
-        index = self.resolution_combo.findData(profile.resolution)
+        index = next(
+            (item_index for item_index in range(self.resolution_combo.count())
+             if tuple(self.resolution_combo.itemData(item_index)) == tuple(profile.resolution)),
+            -1,
+        )
         if index < 0:
             self.resolution_combo.addItem(f"{profile.resolution[0]}×{profile.resolution[1]}", profile.resolution)
             index = self.resolution_combo.count() - 1
@@ -432,9 +602,10 @@ class MainWindow(QMainWindow):
         measurement = measure_points(processing.points, calibration.scale_mm_per_px, self.settings.norms,
                                      automatic=True, confidence=processing.confidence,
                                      diagnostics=processing.diagnostics)
-        overlay = draw_measurement(packet.frame, measurement, self.settings.norms)
-        self.snapshot = MeasurementSnapshot(packet.sequence, packet.frame, processing, measurement, overlay)
-        self._show_image(overlay)
+        geometry_overlay = draw_measurement_geometry(packet.frame, measurement)
+        persisted_overlay = draw_measurement_text(geometry_overlay, measurement, self.settings.norms)
+        self.snapshot = MeasurementSnapshot(packet.sequence, packet.frame, processing, measurement, persisted_overlay)
+        self._show_image(geometry_overlay, measurement)
         self._show_result(measurement)
         self.diagnostic_text.setPlainText("\n".join(processing.diagnostics))
         self.measure_button.setEnabled(True)
@@ -453,28 +624,32 @@ class MainWindow(QMainWindow):
     def _show_result(self, result: MeasurementResult) -> None:
         self.length_label.setText(f"{result.length_mm:.4f} мм")
         self.width_label.setText(f"{result.width_mm:.4f} мм")
-        color = "#087f23" if result.dimensions_ok else "#b00020"
-        self.length_label.setStyleSheet(f"color:{'#087f23' if result.length_ok else '#b00020'}")
-        self.width_label.setStyleSheet(f"color:{'#087f23' if result.width_ok else '#b00020'}")
-        self.decision_label.setText("ДА" if result.dimensions_ok else "НЕТ")
+        color = "#18864b" if result.dimensions_ok else "#c13d3d"
+        self.length_label.setStyleSheet(f"color:{'#18864b' if result.length_ok else '#c13d3d'}")
+        self.width_label.setStyleSheet(f"color:{'#18864b' if result.width_ok else '#c13d3d'}")
+        self.decision_label.setText("Соответствует" if result.dimensions_ok else "Вне допуска")
         self.decision_label.setStyleSheet(f"color:{color}")
         self.state_label.setText("Точки исправлены вручную; нажмите «Измерить» для сохранения." if not result.automatic else "Автоматическое измерение")
 
-    def _show_image(self, image: np.ndarray) -> None:
+    def _show_image(self, image: np.ndarray, measurement: MeasurementResult | None = None) -> None:
         self._display_image = image
+        self._display_measurement = measurement
         displayed = image.copy()
-        if displayed.ndim == 3:
+        if displayed.ndim == 3 and self.show_roi_checkbox.isChecked():
             roi = self._roi_for_frame(displayed)
             if roi != full_frame_roi((displayed.shape[1], displayed.shape[0])):
                 x, y, width, height = roi
-                cv2.rectangle(displayed, (x, y), (x + width - 1, y + height - 1), (0, 210, 255), 2)
+                cv2.rectangle(displayed, (x, y), (x + width - 1, y + height - 1), (0, 0, 220), 2)
+        # Текст рисуется последним: тёмная подложка закрывает рамку ROI под ним.
+        if measurement is not None:
+            displayed = draw_measurement_text(displayed, measurement, self.settings.norms)
         pixmap = QPixmap.fromImage(array_to_qimage(displayed))
         self.preview.setPixmap(pixmap.scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._display_image is not None:
-            self._show_image(self._display_image)
+            self._show_image(self._display_image, self._display_measurement)
 
     def _selected_camera(self) -> tuple[CameraDescriptor, tuple[int, int]] | None:
         descriptor, resolution = self.camera_combo.currentData(), self.resolution_combo.currentData()
@@ -541,13 +716,23 @@ class MainWindow(QMainWindow):
         return calibration if calibration.matches(descriptor.index, descriptor.backend, actual) else None
 
     def _update_calibration_status(self) -> None:
+        selected = self._selected_camera()
+        if selected:
+            descriptor, resolution = selected
+            actual = ((self.current_frame.shape[1], self.current_frame.shape[0])
+                      if self.current_frame is not None else resolution)
+            self.resolution_status_label.setText(
+                f"{descriptor.name} · {descriptor.backend} · {actual[0]}×{actual[1]}"
+            )
+        else:
+            self.resolution_status_label.setText("Камера и разрешение не выбраны")
         calibration = self._valid_calibration()
         if calibration:
-            self.calibration_label.setText(f"Калибровка: {calibration.scale_mm_per_px:.8f} мм/px · {calibration.resolution[0]}×{calibration.resolution[1]}")
-            self.calibration_label.setStyleSheet("color:#087f23")
+            self.calibration_label.setText(f"Калибровка активна · {calibration.scale_mm_per_px:.8f} мм/px")
+            self.calibration_label.setStyleSheet("color:#18864b")
         else:
             self.calibration_label.setText("Нужна калибровка для выбранной камеры и разрешения")
-            self.calibration_label.setStyleSheet("color:#b00020")
+            self.calibration_label.setStyleSheet("color:#c13d3d")
 
     def edit_points(self) -> None:
         snapshot = self.snapshot
@@ -563,9 +748,12 @@ class MainWindow(QMainWindow):
         measurement = measure_points(dialog.points, snapshot.measurement.scale_mm_per_px,
             self.settings.norms, automatic=False, confidence=1.0,
             diagnostics=snapshot.measurement.diagnostics + ("Измерительные точки скорректированы вручную.",))
-        overlay = draw_measurement(snapshot.frame, measurement, self.settings.norms)
-        self.snapshot = MeasurementSnapshot(snapshot.sequence, snapshot.frame, snapshot.processing, measurement, overlay)
-        self._show_image(overlay)
+        geometry_overlay = draw_measurement_geometry(snapshot.frame, measurement)
+        persisted_overlay = draw_measurement_text(geometry_overlay, measurement, self.settings.norms)
+        self.snapshot = MeasurementSnapshot(
+            snapshot.sequence, snapshot.frame, snapshot.processing, measurement, persisted_overlay
+        )
+        self._show_image(geometry_overlay, measurement)
         self._show_result(measurement)
         self.measure_button.setEnabled(True)
 
@@ -604,10 +792,31 @@ class MainWindow(QMainWindow):
         for row_index, row in enumerate(rows):
             values = [row["created_at"], f"{row['length_mm']:.4f}", f"{row['width_mm']:.4f}",
                 "ДА" if row["dimensions_ok"] else "НЕТ",
-                "Авто" if row["automatic"] else "Вручную", row["overlay_path"]]
+                "Авто" if row["automatic"] else "Вручную", Path(row["overlay_path"]).name]
             for column, value in enumerate(values):
-                self.history_table.setItem(row_index, column, QTableWidgetItem(str(value)))
-        self.history_table.resizeColumnsToContents()
+                item = QTableWidgetItem(str(value))
+                if column in (1, 2):
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                elif column in (3, 4):
+                    item.setTextAlignment(Qt.AlignCenter)
+                if column == 3:
+                    item.setForeground(QBrush(QColor("#18864b" if row["dimensions_ok"] else "#c13d3d")))
+                if column == 5:
+                    item.setData(Qt.UserRole, row["overlay_path"])
+                    item.setToolTip(f"Двойной щелчок — открыть снимок\n{row['overlay_path']}")
+                self.history_table.setItem(row_index, column, item)
+
+    def _open_history_image(self, item: QTableWidgetItem) -> None:
+        if item.column() != 5:
+            return
+        path_text = item.data(Qt.UserRole)
+        if not path_text:
+            return
+        path = Path(path_text)
+        if not path.is_file():
+            self.statusBar().showMessage(f"Файл снимка не найден: {path}", 6000)
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def export_csv(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Экспорт результатов", "marker_qc_export.csv", "CSV (*.csv)")
