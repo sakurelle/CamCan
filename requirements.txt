@@ -1,0 +1,7 @@
+numpy==2.5.4
+opencv-python-headless==4.14.0.94
+PySide6-Essentials==6.10.3
+openpyxl==3.1.5
+pytest==9.1.1
+PyInstaller==6.22.3
+

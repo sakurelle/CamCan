@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marker-qc"
+version = "1.1.0"
+description = "Локальное приложение ОТК для контроля изогнутых маркеров"
+readme = "README.md"
+requires-python = ">=3.12,<3.16"
+dependencies = [
+  "numpy==2.5.4",
+  "opencv-python-headless==4.14.0.94",
+  "PySide6-Essentials==6.10.3",
+  "openpyxl==3.1.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "PyInstaller==6.22.3"]
+
+[project.scripts]
+marker-qc = "marker_qc.app:main"
+
+[tool.setuptools.packages.find]
+include = ["marker_qc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+

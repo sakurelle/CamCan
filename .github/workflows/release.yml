@@ -1,0 +1,69 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-release:
+    if: github.repository_owner == github.actor || github.event_name == 'push'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MARKER_QC_SKIP_CAMERA_SCAN: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify tag version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $line = Select-String -LiteralPath pyproject.toml -Pattern '^version\s*=\s*"([^\"]+)"$' | Select-Object -First 1
+          if (-not $line) { throw "Project version not found" }
+          $version = $line.Matches[0].Groups[1].Value
+          if ($tag -ne "v$version") { throw "Tag $tag does not match project version v$version" }
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build onedir application
+        shell: pwsh
+        run: .\build.ps1 -PythonExecutable (Get-Command python).Source -SkipTests
+      - name: Smoke test frozen application
+        shell: pwsh
+        run: |
+          $env:MARKER_QC_SMOKE_TEST = "1"
+          $env:MARKER_QC_DATA_DIR = Join-Path $env:RUNNER_TEMP "MarkerQC-smoke"
+          $process = Start-Process -FilePath ".\dist\MarkerQC\MarkerQC.exe" -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Smoke test exit code: $($process.ExitCode)" }
+          if (-not (Test-Path (Join-Path $env:MARKER_QC_DATA_DIR "smoke-ready.txt"))) { throw "Smoke marker not created" }
+          if (-not (Test-Path (Join-Path $env:MARKER_QC_DATA_DIR "marker_qc.sqlite3"))) { throw "User database not created" }
+      - name: Package ZIP and checksum
+        shell: pwsh
+        run: .\scripts\package_release.ps1 -Tag "${{ github.ref_name }}"
+      - name: Ensure release does not already exist
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "Release already exists; refusing to overwrite it" }
+          exit 0
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release create $tag "release\MarkerQC-$tag-win64.zip" "release\MarkerQC-$tag-win64.zip.sha256" --verify-tag --generate-notes --title "Marker QC $tag"
