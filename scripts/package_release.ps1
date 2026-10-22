@@ -19,7 +19,7 @@ if ($Tag -ne "v$ProjectVersion") { throw "Тег $Tag не соответств�
 
 $ReleaseDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
-$ArchiveName = "MarkerQC-$Tag-win64.zip"
+$ArchiveName = "MarkerQC-Windows-x64.zip"
 $ArchivePath = Join-Path $ReleaseDir $ArchiveName
 $ChecksumPath = "$ArchivePath.sha256"
 Compress-Archive -LiteralPath $DistRoot -DestinationPath $ArchivePath -CompressionLevel Optimal -Force

@@ -6,7 +6,7 @@ Marker QC — настольное приложение для измерени�
 
 ## Windows: готовое приложение
 
-1. Откройте раздел **Releases** репозитория и скачайте последний файл `MarkerQC-vX.Y.Z-win64.zip`.
+1. Откройте раздел **Releases** репозитория и скачайте последний файл `MarkerQC-Windows-x64.zip`.
 2. Распакуйте ZIP полностью.
 3. Запустите `MarkerQC\MarkerQC.exe`.
 4. Не удаляйте каталог `_internal` и не переносите отдельно один EXE: это onedir-приложение.
@@ -50,10 +50,10 @@ python -m pytest -q
 .\build.ps1
 ```
 
-Результат: `dist\MarkerQC\MarkerQC.exe`. Для упаковки версии 1.1.0:
+Результат: `dist\MarkerQC\MarkerQC.exe`. Для упаковки версии 1.1.1:
 
 ```powershell
-.\scripts\package_release.ps1 -Tag v1.1.0
+.\scripts\package_release.ps1 -Tag v1.1.1
 ```
 
 Скрипт проверяет совпадение тега с `pyproject.toml`, создаёт ZIP и SHA-256 в `release\`.
@@ -63,21 +63,21 @@ python -m pytest -q
 ## GitHub Actions и выпуск версии
 
 - `.github/workflows/ci.yml` запускает компиляцию модулей и тесты на Windows при push и pull request.
-- `.github/workflows/release.yml` запускается только для тега `v*`, проверяет версию, выполняет тесты, собирает onedir, запускает frozen smoke test, создаёт ZIP и SHA-256 и публикует GitHub Release.
+- `.github/workflows/release.yml` автоматически запускается для нового тега `v*`; его также можно повторно запустить вручную через `workflow_dispatch`, указав существующий тег. Workflow проверяет версию, выполняет тесты, собирает onedir, запускает frozen smoke test, создаёт ZIP и SHA-256 и публикует GitHub Release.
 - Публикация использует штатный `GITHUB_TOKEN` с `contents: write` только в release job. Pull request не может опубликовать релиз.
 - Существующий релиз с тем же тегом не перезаписывается.
 
 Создание релиза:
 
 ```powershell
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.1.1
+git push origin v1.1.1
 ```
 
 Ручной эквивалент после локальной сборки и упаковки:
 
 ```powershell
-gh release create v1.1.0 release\MarkerQC-v1.1.0-win64.zip release\MarkerQC-v1.1.0-win64.zip.sha256 --verify-tag --generate-notes
+gh release create v1.1.1 release\MarkerQC-Windows-x64.zip release\MarkerQC-Windows-x64.zip.sha256 --verify-tag --generate-notes
 ```
 
 Не храните персональные токены в репозитории.

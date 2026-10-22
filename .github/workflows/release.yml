@@ -4,23 +4,30 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example v1.1.1)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build-and-release:
-    if: github.repository_owner == github.actor || github.event_name == 'push'
     runs-on: windows-latest
     permissions:
       contents: write
     env:
       QT_QPA_PLATFORM: offscreen
       MARKER_QC_SKIP_CAMERA_SCAN: "1"
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -30,16 +37,33 @@ jobs:
       - name: Verify tag version
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:RELEASE_TAG
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "Invalid release tag: $tag" }
           $line = Select-String -LiteralPath pyproject.toml -Pattern '^version\s*=\s*"([^\"]+)"$' | Select-Object -First 1
           if (-not $line) { throw "Project version not found" }
           $version = $line.Matches[0].Groups[1].Value
           if ($tag -ne "v$version") { throw "Tag $tag does not match project version v$version" }
+          $tagCommit = (git rev-list -n 1 $tag).Trim()
+          $headCommit = (git rev-parse HEAD).Trim()
+          if ($tagCommit -ne $headCommit) { throw "Checked out commit $headCommit does not match $tag ($tagCommit)" }
       - name: Run tests
         run: python -m pytest -q
       - name: Build onedir application
         shell: pwsh
         run: .\build.ps1 -PythonExecutable (Get-Command python).Source -SkipTests
+      - name: Verify onedir output
+        shell: pwsh
+        run: |
+          $required = @(
+            ".\dist\MarkerQC\MarkerQC.exe",
+            ".\dist\MarkerQC\_internal",
+            ".\dist\MarkerQC\README.md",
+            ".\dist\MarkerQC\docs\OPERATOR_GUIDE.md",
+            ".\dist\MarkerQC\docs\METROLOGY_VALIDATION.md"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Required release file is missing: $path" }
+          }
       - name: Smoke test frozen application
         shell: pwsh
         run: |
@@ -51,13 +75,38 @@ jobs:
           if (-not (Test-Path (Join-Path $env:MARKER_QC_DATA_DIR "marker_qc.sqlite3"))) { throw "User database not created" }
       - name: Package ZIP and checksum
         shell: pwsh
-        run: .\scripts\package_release.ps1 -Tag "${{ github.ref_name }}"
+        run: .\scripts\package_release.ps1 -Tag $env:RELEASE_TAG
+      - name: Verify release archive
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = ".\release\MarkerQC-Windows-x64.zip"
+          $checksum = "$zip.sha256"
+          if (-not (Test-Path -LiteralPath $zip)) { throw "Release ZIP not found" }
+          if (-not (Test-Path -LiteralPath $checksum)) { throw "SHA-256 file not found" }
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $zip))
+          try {
+            $entries = @($archive.Entries | ForEach-Object FullName)
+            foreach ($required in @("MarkerQC/MarkerQC.exe", "MarkerQC/README.md")) {
+              if ($required -notin $entries) { throw "Archive entry is missing: $required" }
+            }
+            if (-not ($entries | Where-Object { $_ -like "MarkerQC/_internal/*" })) {
+              throw "Archive does not contain MarkerQC/_internal"
+            }
+            $forbidden = @($entries | Where-Object {
+              $_ -match '(^|/)(reference_archive|\.venv|build|tests|release)(/|$)' -or
+              $_ -match '\.(sqlite3?|db|log)$'
+            })
+            if ($forbidden) { throw "Forbidden archive entries: $($forbidden -join ', ')" }
+          } finally {
+            $archive.Dispose()
+          }
       - name: Ensure release does not already exist
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ github.ref_name }}" 2>$null
+          gh release view $env:RELEASE_TAG 2>$null
           if ($LASTEXITCODE -eq 0) { throw "Release already exists; refusing to overwrite it" }
           exit 0
       - name: Publish GitHub Release
@@ -65,5 +114,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          gh release create $tag "release\MarkerQC-$tag-win64.zip" "release\MarkerQC-$tag-win64.zip.sha256" --verify-tag --generate-notes --title "Marker QC $tag"
+          $tag = $env:RELEASE_TAG
+          gh release create $tag "release\MarkerQC-Windows-x64.zip" "release\MarkerQC-Windows-x64.zip.sha256" --verify-tag --generate-notes --title "Marker QC $tag"
