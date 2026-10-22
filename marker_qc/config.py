@@ -44,6 +44,8 @@ class Norms:
     length_tolerance_mm: str = "0.10"
     width_nominal_mm: str = "1.15"
     width_tolerance_mm: str = "0.05"
+    bend_position_min: str = "0.40"
+    bend_position_max: str = "0.60"
 
     def _bounds(self, nominal: str, tolerance: str) -> tuple[Decimal, Decimal]:
         try:
@@ -71,6 +73,22 @@ class Norms:
         value = Decimal(str(value_mm))
         low, high = self.width_bounds
         return low <= value <= high
+
+    @property
+    def bend_position_bounds(self) -> tuple[Decimal, Decimal]:
+        try:
+            low = Decimal(self.bend_position_min)
+            high = Decimal(self.bend_position_max)
+        except InvalidOperation as exc:
+            raise ValueError("Границы положения перегиба должны быть корректными числами.") from exc
+        if not Decimal("0") <= low <= high <= Decimal("1"):
+            raise ValueError("Границы положения перегиба должны удовлетворять 0 ≤ минимум ≤ максимум ≤ 1.")
+        return low, high
+
+    def check_bend_position(self, value: float | str | Decimal) -> bool:
+        position = Decimal(str(value))
+        low, high = self.bend_position_bounds
+        return low <= position <= high
 
 
 @dataclass

@@ -58,6 +58,8 @@ class MeasurementResult:
     automatic: bool
     confidence: float
     diagnostics: tuple[str, ...] = ()
+    bend_position: float = 0.5
+    bend_centered: bool = True
 
 
 @dataclass(frozen=True)

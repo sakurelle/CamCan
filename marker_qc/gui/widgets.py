@@ -116,9 +116,12 @@ class ImageCanvas(QWidget):
             painter.drawLine(screen("P1"), screen("P2"))
         for name, value in self._points.items():
             position = QPoint(int(value[0] * self._zoom), int(value[1] * self._zoom))
-            painter.setPen(QPen(self.COLORS.get(name, Qt.magenta), 3))
-            painter.setBrush(self.COLORS.get(name, Qt.magenta))
-            painter.drawEllipse(position, 5, 5)
+            color = self.COLORS.get(name, Qt.magenta)
+            painter.setPen(QPen(color, 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(position, 6, 6)
+            painter.drawLine(position + QPoint(-3, 0), position + QPoint(3, 0))
+            painter.drawLine(position + QPoint(0, -3), position + QPoint(0, 3))
             painter.drawText(position + QPoint(7, -7), name)
 
 

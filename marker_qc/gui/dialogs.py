@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from marker_qc.config import Norms
-from marker_qc.geometry import GeometryError, calibration_scale, dimensions_from_points
+from marker_qc.geometry import GeometryError, calibration_scale, dimensions_from_points, projection_parameter
 from marker_qc.models import MeasurementPoints
 from marker_qc.gui.widgets import ImageCanvas, RoiCanvas
 
@@ -117,13 +117,15 @@ class CalibrationDialog(QDialog):
 
 
 class PointEditorDialog(QDialog):
-    def __init__(self, image: np.ndarray, points: MeasurementPoints, scale: float, parent=None):
+    def __init__(self, image: np.ndarray, points: MeasurementPoints, scale: float,
+                 norms: Norms | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Ручная корректировка измерительных точек")
         source = {"L1": points.l1, "L2": points.l2, "W1": points.w1, "W2": points.w2, "WC": points.wc}
         self.canvas = ImageCanvas(image, source)
         self.canvas.points_changed.connect(self._update)
         self.scale = scale
+        self.norms = norms or Norms()
         self.info = QLabel()
         self._zoom_value = 1.0
         minus, plus = QPushButton("−"), QPushButton("+")
@@ -159,7 +161,12 @@ class PointEditorDialog(QDialog):
     def _update(self, *_args) -> None:
         try:
             length, width = dimensions_from_points(self.points, self.scale)
-            self.info.setText(f"Длина: {length:.4f} мм; ширина: {width:.4f} мм")
+            bend_position = projection_parameter(self.points.wc, self.points.w1, self.points.w2)
+            bend_status = "OK" if self.norms.check_bend_position(bend_position) else "FAIL"
+            self.info.setText(
+                f"Длина: {length:.4f} мм; ширина: {width:.4f} мм; "
+                f"положение перегиба: {bend_status} (t={bend_position:.3f})"
+            )
         except GeometryError as exc:
             self.info.setText(str(exc))
 
@@ -183,16 +190,23 @@ class NormsDialog(QDialog):
             "length_tolerance_mm": "Допуск длины ±, мм",
             "width_nominal_mm": "Номинал ширины, мм",
             "width_tolerance_mm": "Допуск ширины ±, мм",
+            "bend_position_min": "Положение перегиба, минимум",
+            "bend_position_max": "Положение перегиба, максимум",
         }
         for name, label in labels.items():
             field = QDoubleSpinBox()
-            field.setDecimals(4)
-            field.setRange(0.0, 1000.0)
+            if name.startswith("bend_position_"):
+                field.setDecimals(3)
+                field.setRange(0.0, 1.0)
+                field.setSingleStep(0.01)
+            else:
+                field.setDecimals(4)
+                field.setRange(0.0, 1000.0)
             field.setValue(float(getattr(norms, name)))
             self.fields[name] = field
             form.addRow(label, field)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Изменение нормативов будет записано в журнале аудита."))
@@ -202,4 +216,12 @@ class NormsDialog(QDialog):
     @property
     def norms(self) -> Norms:
         return Norms(**{name: format(Decimal(str(field.value())), "f") for name, field in self.fields.items()})
+
+    def _accept(self) -> None:
+        try:
+            self.norms.bend_position_bounds
+        except ValueError as exc:
+            QMessageBox.warning(self, "Некорректные допуски", str(exc))
+            return
+        self.accept()
 

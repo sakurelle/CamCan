@@ -282,10 +282,15 @@ def draw_contour_overlay(roi: np.ndarray, mask: np.ndarray, points: MeasurementP
     cv2.line(overlay, w1, w2, (255, 0, 0), 2)
     cv2.line(overlay, wc, _project_to_line(wc, w1, w2), (255, 0, 0), 2)
     for point in (l1, l2):
-        cv2.circle(overlay, point, 5, (0, 0, 255), -1)
+        _draw_hollow_point(overlay, point, (0, 0, 255))
     for point in (w1, w2, wc):
-        cv2.circle(overlay, point, 5, (255, 0, 0), -1)
+        _draw_hollow_point(overlay, point, (255, 0, 0))
     return overlay
+
+
+def _draw_hollow_point(image: np.ndarray, point: tuple[int, int], color: tuple[int, int, int]) -> None:
+    cv2.circle(image, point, 6, color, 2, cv2.LINE_AA)
+    cv2.drawMarker(image, point, color, cv2.MARKER_CROSS, 5, 1, cv2.LINE_AA)
 
 
 def _project_to_line(point: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> tuple[int, int]:

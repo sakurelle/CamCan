@@ -4,7 +4,7 @@ import pytest
 
 from marker_qc.geometry import (
     GeometryError, calibration_scale, dimensions_from_points, euclidean_distance,
-    point_to_line_distance, widget_to_image,
+    point_to_line_distance, project_point_to_line, projection_parameter, widget_to_image,
 )
 from marker_qc.models import MeasurementPoints
 
@@ -33,6 +33,17 @@ def test_degenerate_geometry_is_rejected() -> None:
     points = MeasurementPoints((1, 1), (1, 1), (0, 0), (1, 0), (0, 1))
     with pytest.raises(GeometryError):
         dimensions_from_points(points, 0.02)
+
+
+def test_projection_parameter_reports_bend_position_on_width_line() -> None:
+    projection, position = project_point_to_line((50, 25), (0, 0), (100, 0))
+    assert projection == pytest.approx((50, 0))
+    assert position == pytest.approx(0.5)
+    assert projection_parameter((50, 25), (0, 0), (100, 0)) == pytest.approx(0.5)
+    assert projection_parameter((40, -70), (0, 0), (100, 0)) == pytest.approx(0.4)
+    assert projection_parameter((120, 25), (0, 0), (100, 0)) == pytest.approx(1.2)
+    with pytest.raises(GeometryError, match="положение перегиба"):
+        projection_parameter((1, 1), (0, 0), (0, 0))
 
 
 def test_widget_to_image_with_letterboxing() -> None:

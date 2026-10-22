@@ -24,6 +24,24 @@ def point_to_line_distance(point: Point, line_a: Point, line_b: Point) -> float:
     return abs(dx * (ay - py) - (ax - px) * dy) / denominator
 
 
+def project_point_to_line(point: Point, line_a: Point, line_b: Point) -> tuple[Point, float]:
+    """Return orthogonal projection F and its signed position along line_a-line_b."""
+    ax, ay = map(float, line_a)
+    bx, by = map(float, line_b)
+    px, py = map(float, point)
+    dx, dy = bx - ax, by - ay
+    denominator = dx * dx + dy * dy
+    if denominator == 0.0:
+        raise GeometryError("Точки W1 и W2 совпадают: положение перегиба определить невозможно.")
+    parameter = ((px - ax) * dx + (py - ay) * dy) / denominator
+    return (ax + parameter * dx, ay + parameter * dy), parameter
+
+
+def projection_parameter(point: Point, line_a: Point, line_b: Point) -> float:
+    """Return the signed position of a point's projection along line_a-line_b."""
+    return project_point_to_line(point, line_a, line_b)[1]
+
+
 def calibration_scale(point_a: Point, point_b: Point, real_distance_mm: float) -> float:
     if not math.isfinite(real_distance_mm) or real_distance_mm <= 0:
         raise GeometryError("Реальное расстояние калибровки должно быть больше нуля.")

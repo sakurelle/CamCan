@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["MARKER_QC_SKIP_CAMERA_SCAN"] = "1"
 
 import numpy as np
+import cv2
 from PySide6.QtWidgets import QApplication
 
 from marker_qc.camera import CameraDescriptor
@@ -14,7 +15,7 @@ from marker_qc.paths import AppPaths
 from marker_qc.processing import ProcessingResult
 from marker_qc.realtime import AnalysisPacket
 from marker_qc.storage import Storage
-from marker_qc.measurement import measure_points
+from marker_qc.measurement import draw_measurement_geometry, measure_points
 from marker_qc.config import Norms
 from marker_qc.gui.widgets import RoiCanvas
 
@@ -40,8 +41,15 @@ def test_live_result_is_not_saved_until_measure_and_double_save_is_blocked(tmp_p
 
     window._analysis_ready(AnalysisPacket(7, frame, processing))
     assert storage.history() == []
+    assert window._display_image is not None
+    assert np.all(window._display_image[:80] == 240)
+    assert tuple(window._display_image[100, 200]) != (240, 240, 240)
     window.save_measurement()
     assert len(storage.history()) == 1
+    saved_overlay = cv2.imread(storage.history()[0]["overlay_path"])
+    assert saved_overlay is not None
+    assert np.all(saved_overlay[:80] == 240)
+    assert tuple(saved_overlay[100, 200]) != (240, 240, 240)
     window.save_measurement()
     assert len(storage.history()) == 1
     window.close()
@@ -53,19 +61,58 @@ def test_information_panel_width_and_metric_fonts_are_stable(tmp_path) -> None:
     paths = AppPaths.resolve(tmp_path)
     window = MainWindow(paths, SettingsStore(paths.settings), AppSettings(), Storage(paths.database, paths.images))
     width = window.info_panel.width()
-    point_sizes = {label.font().pointSize() for label in (window.length_label, window.width_label, window.decision_label)}
+    application_font = app.font()
+    metric_fonts = [
+        label.font()
+        for label in (window.length_label, window.width_label, window.bend_label, window.decision_label)
+    ]
+    assert window.styleSheet() == ""
+    assert window.camera_combo.styleSheet() == ""
+    assert window.measure_button.styleSheet() == ""
+    assert window.show_roi_checkbox.styleSheet() == ""
+    assert window.tabs.styleSheet() == ""
     window._show_unavailable("Маркер не обнаружен")
-    assert window.info_panel.width() == width == 390
+    assert window.info_panel.width() == width == 360
     points = MeasurementPoints((0, 0), (350, 0), (0, 0), (350, 0), (175, 58))
     window._show_result(measure_points(points, 0.02, Norms(), automatic=True, confidence=1.0))
     assert window.info_panel.width() == width
     assert window.decision_label.text() == "Соответствует"
+    assert window.bend_label.text() == "Да · t=0.500"
     window._show_result(measure_points(points, 0.03, Norms(), automatic=True, confidence=1.0))
     assert window.decision_label.text() == "Вне допуска"
     assert window.info_panel.width() == width
-    assert point_sizes == {20}
+    assert all(font.family() == application_font.family() for font in metric_fonts)
+    assert all(font.pointSize() == application_font.pointSize() for font in metric_fonts)
+    assert all(font.weight() == application_font.weight() for font in metric_fonts)
     window.close()
     app.processEvents()
+
+
+def test_off_center_bend_fails_measurement_and_is_reported_in_ui(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    paths = AppPaths.resolve(tmp_path)
+    window = MainWindow(paths, SettingsStore(paths.settings), AppSettings(), Storage(paths.database, paths.images))
+    points = MeasurementPoints((0, 0), (350, 0), (0, 0), (350, 0), (100, 58))
+    result = measure_points(points, 0.02, Norms(), automatic=True, confidence=1.0)
+    assert result.length_ok and result.width_ok
+    assert np.isclose(result.bend_position, 100 / 350)
+    assert not result.bend_centered
+    assert not result.dimensions_ok
+    window._show_result(result)
+    assert window.bend_label.text().startswith("Нет · t=")
+    assert window.decision_label.text() == "Вне допуска"
+    window.close()
+    app.processEvents()
+
+
+def test_measurement_geometry_points_are_hollow_with_visible_centers() -> None:
+    image = np.full((110, 110, 3), 180, dtype=np.uint8)
+    points = MeasurementPoints((20, 20), (80, 20), (20, 50), (80, 50), (50, 80))
+    result = measure_points(points, 0.02, Norms(), automatic=True, confidence=1.0)
+    overlay = draw_measurement_geometry(image, result)
+    assert tuple(overlay[20, 20]) != (180, 180, 180)
+    assert tuple(overlay[20, 26]) != (180, 180, 180)
+    assert np.max(np.abs(overlay[17, 18].astype(np.int16) - 180)) < 20
 
 
 def test_saved_camera_profile_is_restored_without_scan(tmp_path) -> None:
@@ -130,7 +177,7 @@ def test_button_roles_and_roi_visibility_control_are_consistent(tmp_path) -> Non
     app.processEvents()
 
 
-def test_roi_frame_can_be_hidden_without_removing_measurement_overlay(tmp_path, monkeypatch) -> None:
+def test_roi_frame_can_be_hidden_without_changing_camera_image(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     paths = AppPaths.resolve(tmp_path)
     settings = AppSettings()
@@ -140,23 +187,21 @@ def test_roi_frame_can_be_hidden_without_removing_measurement_overlay(tmp_path, 
     window.camera_combo.clear()
     window.camera_combo.addItem(descriptor.label, descriptor)
     frame = np.full((480, 640, 3), 180, dtype=np.uint8)
-    points = MeasurementPoints((100, 100), (450, 100), (100, 100), (450, 100), (275, 158))
-    result = measure_points(points, 0.02, Norms(), automatic=True, confidence=1.0)
     captured = []
 
     from marker_qc.gui import main_window as main_window_module
     original = main_window_module.array_to_qimage
     monkeypatch.setattr(main_window_module, "array_to_qimage", lambda image: (captured.append(image.copy()), original(image))[1])
-    window._show_image(frame, result)
+    window._show_image(frame)
     with_frame = captured[-1]
     assert tuple(with_frame[150, 200]) == (0, 0, 220)
-    assert int(with_frame[12, 12].max()) < 100
+    assert np.all(with_frame[:110] == 180)
+    assert tuple(with_frame[100, 100]) == (180, 180, 180)
     assert tuple(with_frame[470, 20]) == (180, 180, 180)
-    assert np.any((with_frame[:110, :, 1] > with_frame[:110, :, 2] + 30))
 
     window.show_roi_checkbox.setChecked(False)
     without_frame = captured[-1]
     assert tuple(without_frame[150, 200]) != (0, 0, 220)
-    assert np.any((without_frame[:110, :, 1] > without_frame[:110, :, 2] + 30))
+    assert np.array_equal(without_frame, frame)
     window.close()
     app.processEvents()

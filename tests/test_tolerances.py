@@ -20,3 +20,15 @@ def test_length_boundaries(value, expected) -> None:
 def test_width_boundaries(value, expected) -> None:
     assert Norms().check_width(value) is expected
 
+
+@pytest.mark.parametrize("value,expected", [
+    ("0.40", True), ("0.50", True), ("0.60", True), ("0.3999", False), ("0.6001", False),
+])
+def test_bend_position_boundaries(value, expected) -> None:
+    assert Norms().check_bend_position(value) is expected
+
+
+def test_invalid_bend_position_bounds_are_rejected() -> None:
+    with pytest.raises(ValueError, match="0 ≤ минимум"):
+        Norms(bend_position_min="0.7", bend_position_max="0.3").bend_position_bounds
+
