@@ -50,8 +50,8 @@ jobs:
             "build.ps1",
             "scripts\package_release.ps1",
             "README.md",
-            "docs\OPERATOR_GUIDE.md",
-            "docs\METROLOGY_VALIDATION.md"
+            "docs\Руководство оператора.docx",
+            "docs\Руководство оператора.pdf"
           )) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Required release input is missing: $path"
@@ -84,13 +84,18 @@ jobs:
           $required = @(
             ".\dist\MarkerQC\MarkerQC.exe",
             ".\dist\MarkerQC\_internal",
-            ".\dist\MarkerQC\README.md",
-            ".\dist\MarkerQC\docs\OPERATOR_GUIDE.md",
-            ".\dist\MarkerQC\docs\METROLOGY_VALIDATION.md"
+            ".\dist\MarkerQC\docs",
+            ".\dist\MarkerQC\docs\Руководство оператора.pdf"
           )
           foreach ($path in $required) {
             if (-not (Test-Path -LiteralPath $path)) { throw "Required release file is missing: $path" }
           }
+          $releaseDocs = @(Get-ChildItem -LiteralPath ".\dist\MarkerQC\docs" -File)
+          if ($releaseDocs.Count -ne 1 -or $releaseDocs[0].Name -ne "Руководство оператора.pdf") {
+            throw "Release docs must contain only Руководство оператора.pdf"
+          }
+          $pdfCopies = @(Get-ChildItem -LiteralPath ".\dist\MarkerQC" -File -Recurse | Where-Object Name -eq "Руководство оператора.pdf")
+          if ($pdfCopies.Count -ne 1) { throw "The operator guide must occur exactly once in the release" }
       - name: Smoke test frozen application
         shell: pwsh
         run: |
@@ -107,22 +112,31 @@ jobs:
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = ".\release\MarkerQC-Windows-x64.zip"
+          $archiveName = "MarkerQC-$env:RELEASE_TAG-win64.zip"
+          $zip = ".\release\$archiveName"
           $checksum = "$zip.sha256"
           if (-not (Test-Path -LiteralPath $zip)) { throw "Release ZIP not found" }
           if (-not (Test-Path -LiteralPath $checksum)) { throw "SHA-256 file not found" }
           $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $zip))
           try {
             $entries = @($archive.Entries | ForEach-Object FullName)
-            foreach ($required in @("MarkerQC/MarkerQC.exe", "MarkerQC/README.md")) {
+            foreach ($required in @("MarkerQC/MarkerQC.exe", "MarkerQC/docs/Руководство оператора.pdf")) {
               if ($required -notin $entries) { throw "Archive entry is missing: $required" }
             }
             if (-not ($entries | Where-Object { $_ -like "MarkerQC/_internal/*" })) {
               throw "Archive does not contain MarkerQC/_internal"
             }
+            $docsEntries = @($entries | Where-Object { $_ -like "MarkerQC/docs/*" -and -not $_.EndsWith("/") })
+            if ($docsEntries.Count -ne 1 -or $docsEntries[0] -ne "MarkerQC/docs/Руководство оператора.pdf") {
+              throw "Archive docs must contain only the PDF operator guide: $($docsEntries -join ', ')"
+            }
+            $pdfEntries = @($entries | Where-Object { $_ -like "*/Руководство оператора.pdf" })
+            if ($pdfEntries.Count -ne 1) { throw "The PDF operator guide must occur exactly once in the archive" }
             $forbidden = @($entries | Where-Object {
               $_ -match '(^|/)(reference_archive|\.venv|build|tests|release)(/|$)' -or
-              $_ -match '\.(sqlite3?|db|log)$'
+              $_ -match '\.(sqlite3?|db|log|docx)$' -or
+              ($_ -notlike 'MarkerQC/_internal/*' -and $_ -match '\.(md|py)$') -or
+              $_ -match '^MarkerQC/(settings\.json|images|data|logs)(/|$)'
             })
             if ($forbidden) { throw "Forbidden archive entries: $($forbidden -join ', ')" }
           } finally {
@@ -134,7 +148,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:RELEASE_TAG
-          gh release create $tag "release\MarkerQC-Windows-x64.zip" "release\MarkerQC-Windows-x64.zip.sha256" --verify-tag --generate-notes --title "Marker QC $tag"
+          $archiveName = "MarkerQC-$tag-win64.zip"
+          $notes = @"
+          - Обновлено руководство оператора.
+          - Упрощён состав документации.
+          - В Windows-релиз включена актуальная PDF-инструкция.
+          - Функциональность измерений сохранена без изменений.
+          "@
+          gh release create $tag "release\$archiveName" "release\$archiveName.sha256" --verify-tag --title "Marker QC $tag" --notes $notes
       - name: Verify published GitHub Release
         shell: pwsh
         env:
@@ -144,14 +165,15 @@ jobs:
           $release = gh release view $tag --json url,isDraft,isPrerelease,assets | ConvertFrom-Json
           if ($release.isDraft) { throw "Published release is still a draft" }
           if ($release.isPrerelease) { throw "Published release is unexpectedly marked as prerelease" }
-          $asset = @($release.assets | Where-Object { $_.name -eq "MarkerQC-Windows-x64.zip" })
+          $archiveName = "MarkerQC-$tag-win64.zip"
+          $asset = @($release.assets | Where-Object { $_.name -eq $archiveName })
           if ($asset.Count -ne 1 -or [int64]$asset[0].size -le 0) {
-            throw "Published release does not contain one non-empty MarkerQC-Windows-x64.zip asset"
+            throw "Published release does not contain one non-empty $archiveName asset"
           }
           $downloadDir = Join-Path $env:RUNNER_TEMP "published-release"
           New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
-          gh release download $tag --pattern "MarkerQC-Windows-x64.zip" --dir $downloadDir
-          $localHash = (Get-FileHash -LiteralPath ".\release\MarkerQC-Windows-x64.zip" -Algorithm SHA256).Hash
-          $publishedHash = (Get-FileHash -LiteralPath (Join-Path $downloadDir "MarkerQC-Windows-x64.zip") -Algorithm SHA256).Hash
+          gh release download $tag --pattern $archiveName --dir $downloadDir
+          $localHash = (Get-FileHash -LiteralPath ".\release\$archiveName" -Algorithm SHA256).Hash
+          $publishedHash = (Get-FileHash -LiteralPath (Join-Path $downloadDir $archiveName) -Algorithm SHA256).Hash
           if ($localHash -ne $publishedHash) { throw "Published ZIP checksum does not match the built ZIP" }
           Write-Output "RELEASE_URL=$($release.url)"

@@ -6,7 +6,7 @@ Marker QC — настольное приложение для измерени�
 
 ## Windows: готовое приложение
 
-1. Откройте раздел **Releases** репозитория и скачайте последний файл `MarkerQC-Windows-x64.zip`.
+1. Откройте раздел **Releases** репозитория и скачайте файл `MarkerQC-v1.1.5-win64.zip`.
 2. Распакуйте ZIP полностью.
 3. Запустите `MarkerQC\MarkerQC.exe`.
 4. Не удаляйте каталог `_internal` и не переносите отдельно один EXE: это onedir-приложение.
@@ -29,6 +29,8 @@ Marker QC — настольное приложение для измерени�
 - **Очистить историю** удаляет измерения и только связанные снимки внутри управляемого каталога. Калибровка и настройки сохраняются.
 
 Пользовательские данные находятся вне каталога установки: `%LOCALAPPDATA%\MarkerQC`.
+
+Полная инструкция: [Руководство оператора (PDF)](docs/Руководство%20оператора.pdf).
 
 ## Разработка на Windows
 
@@ -74,7 +76,7 @@ $version = (Select-String pyproject.toml '^version\s*=\s*"([^"]+)"$').Matches[0]
 2. Запустите `python -m compileall -q marker_qc`, `python -m pytest -q` и `build.ps1`.
 3. Зафиксируйте изменение версии и остальные изменения в одном коммите и отправьте ветку.
 4. Только после этого создайте аннотированный тег на этом коммите и отправьте тег.
-5. Дождитесь workflow **Windows release** и проверьте, что в GitHub Release опубликован `MarkerQC-Windows-x64.zip`.
+5. Дождитесь workflow **Windows release** и проверьте, что в GitHub Release опубликован архив `MarkerQC-v<version>-win64.zip`.
 
 Пример после установки значения `1.2.0` в `pyproject.toml`:
 
@@ -91,7 +93,7 @@ git push origin v1.2.0
 Ручной эквивалент публикации после локальной сборки и упаковки:
 
 ```powershell
-gh release create v1.2.0 release\MarkerQC-Windows-x64.zip release\MarkerQC-Windows-x64.zip.sha256 --verify-tag --generate-notes
+gh release create v1.2.0 release\MarkerQC-v1.2.0-win64.zip release\MarkerQC-v1.2.0-win64.zip.sha256 --verify-tag --generate-notes
 ```
 
 Не храните персональные токены в репозитории.

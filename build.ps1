@@ -7,6 +7,11 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
+$OperatorGuide = Join-Path $ProjectRoot "docs\Руководство оператора.pdf"
+
+if (-not (Test-Path -LiteralPath $OperatorGuide -PathType Leaf)) {
+    throw "Актуальное руководство оператора не найдено: $OperatorGuide"
+}
 
 if (-not $PythonExecutable) {
     $py = Get-Command py -ErrorAction SilentlyContinue
@@ -43,9 +48,16 @@ if (-not $OneFile) {
     $DistRoot = Join-Path $ProjectRoot "dist\MarkerQC"
     $DistDocs = Join-Path $DistRoot "docs"
     New-Item -ItemType Directory -Force -Path $DistDocs | Out-Null
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot "README.md") -Destination $DistRoot -Force
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs\OPERATOR_GUIDE.md") -Destination $DistDocs -Force
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot "docs\METROLOGY_VALIDATION.md") -Destination $DistDocs -Force
+    Copy-Item -LiteralPath $OperatorGuide -Destination $DistDocs -Force
+
+    $ReleaseDocs = @(Get-ChildItem -LiteralPath $DistDocs -File)
+    if ($ReleaseDocs.Count -ne 1 -or $ReleaseDocs[0].Name -ne "Руководство оператора.pdf") {
+        throw "В каталоге релизной документации должен находиться только файл Руководство оператора.pdf"
+    }
+    $PdfCopies = @(Get-ChildItem -LiteralPath $DistRoot -File -Recurse | Where-Object Name -eq "Руководство оператора.pdf")
+    if ($PdfCopies.Count -ne 1 -or $PdfCopies[0].FullName -ne (Join-Path $DistDocs "Руководство оператора.pdf")) {
+        throw "PDF-инструкция должна находиться в релизе ровно один раз, в каталоге docs"
+    }
 }
 
 Write-Host "Сборка готова в каталоге dist." -ForegroundColor Green

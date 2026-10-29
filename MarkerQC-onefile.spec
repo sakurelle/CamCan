@@ -7,11 +7,7 @@ a = Analysis(
     ["run_marker_qc.py"],
     pathex=[],
     binaries=opencv_binaries,
-    datas=[
-        ("README.md", "."),
-        ("docs/OPERATOR_GUIDE.md", "docs"),
-        ("docs/METROLOGY_VALIDATION.md", "docs"),
-    ],
+    datas=[],
     hiddenimports=["numpy", "cv2", "sqlite3", "openpyxl"],
     hookspath=[],
     hooksconfig={},

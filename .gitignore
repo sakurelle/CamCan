@@ -47,3 +47,6 @@ marker_qc_export*.xlsx
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# Temporary lock files created while Microsoft Office documents are open
+~$*.docx
